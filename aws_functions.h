@@ -247,7 +247,8 @@ static inline const ngx_str_t* ngx_aws_auth__request_body_hash(ngx_pool_t *pool,
 	return &EMPTY_STRING_SHA256;
 }
 
-static inline const ngx_str_t* ngx_aws_auth__canon_url(ngx_pool_t *pool, const ngx_http_request_t *req) {
+static inline const ngx_str_t* ngx_aws_auth__canon_url(ngx_pool_t *pool, const ngx_http_request_t *req,
+	const ngx_str_t *chop_prefix) {
 	ngx_str_t *retval;
 
 	if(req->args.len == 0) {
@@ -261,6 +262,18 @@ static inline const ngx_str_t* ngx_aws_auth__canon_url(ngx_pool_t *pool, const n
 		retval->data = req->uri_start;
 		retval->len = req->args_start - req->uri_start - 1;
 
+	    if (chop_prefix->len > 0) {
+	        if (!ngx_strncmp(retval->data, chop_prefix->data, chop_prefix->len)) {
+	          retval->data += chop_prefix->len;
+	          retval->len -= chop_prefix->len;
+	          ngx_log_error(NGX_LOG_DEBUG, req->connection->log, 0,
+	            "chop_prefix '%V' chopped from URI",&chop_prefix);
+	        } else {
+	          ngx_log_error(NGX_LOG_ERR, req->connection->log, 0,
+	            "chop_prefix '%V' NOT in URI",&chop_prefix);
+	        }
+	    }
+
         ngx_log_error(NGX_LOG_ERR, req->connection->log, 0,
                       "canonical url extracted is %V", retval);
 
@@ -270,7 +283,8 @@ static inline const ngx_str_t* ngx_aws_auth__canon_url(ngx_pool_t *pool, const n
 
 static inline struct AwsCanonicalRequestDetails ngx_aws_auth__make_canonical_request(ngx_pool_t *pool,
 		const ngx_http_request_t *req,
-		const ngx_str_t *s3_bucket_name, const ngx_str_t *amz_date, const ngx_str_t *s3_endpoint) {
+		const ngx_str_t *s3_bucket_name, const ngx_str_t *amz_date, const ngx_str_t *s3_endpoint,
+		const ngx_str_t *chop_prefix) {
 	struct AwsCanonicalRequestDetails retval;
 	
 	// canonize query string
@@ -284,7 +298,7 @@ static inline struct AwsCanonicalRequestDetails ngx_aws_auth__make_canonical_req
 	retval.signed_header_names = canon_headers.signed_header_names;
 	
 	const ngx_str_t *http_method = &(req->method_name);
-	const ngx_str_t *url = ngx_aws_auth__canon_url(pool, req);
+	const ngx_str_t *url = ngx_aws_auth__canon_url(pool, req, chop_prefix);
 
 	retval.canon_request = ngx_palloc(pool, sizeof(ngx_str_t));
 	retval.canon_request->len = 10000;
@@ -333,12 +347,13 @@ static inline struct AwsSignedRequestDetails ngx_aws_auth__compute_signature(ngx
 		const ngx_str_t *signing_key,
 		const ngx_str_t *key_scope,
 		const ngx_str_t *s3_bucket_name,
-    const ngx_str_t *s3_endpoint) {
+    const ngx_str_t *s3_endpoint,
+    const ngx_str_t *chop_prefix) {
 	struct AwsSignedRequestDetails retval;
 
 	const ngx_str_t *date = ngx_aws_auth__compute_request_time(pool, &req->start_sec);
 	const struct AwsCanonicalRequestDetails canon_request = 
-		ngx_aws_auth__make_canonical_request(pool, req, s3_bucket_name, date, s3_endpoint);
+		ngx_aws_auth__make_canonical_request(pool, req, s3_bucket_name, date, s3_endpoint, chop_prefix);
 	const ngx_str_t *canon_request_hash = ngx_aws_auth__hash_sha256(pool, canon_request.canon_request);
 
 	// get string to sign
@@ -360,8 +375,9 @@ static inline const ngx_array_t* ngx_aws_auth__sign(ngx_pool_t *pool, ngx_http_r
 		const ngx_str_t *signing_key,
 		const ngx_str_t *key_scope,
 		const ngx_str_t *s3_bucket_name,
-    const ngx_str_t *s3_endpoint) {
-	const struct AwsSignedRequestDetails signature_details = ngx_aws_auth__compute_signature(pool, req, signing_key, key_scope, s3_bucket_name, s3_endpoint);
+		const ngx_str_t *s3_endpoint,
+	const ngx_str_t *chop_prefix) {
+	const struct AwsSignedRequestDetails signature_details = ngx_aws_auth__compute_signature(pool, req, signing_key, key_scope, s3_bucket_name, s3_endpoint, chop_prefix);
 
 
 	const ngx_str_t *auth_header_value = ngx_aws_auth__make_auth_token(pool, signature_details.signature,
